@@ -1,6 +1,6 @@
 var MIN_PRICE = 30;      // values under this are always ON (MWh)
-var MAX_HOURS_OFF = 10;  // how many hours off in 24h period
-var MAX_OFF_SEQ = 10;    // how many hours in a row it can be off
+var MAX_HOURS_OFF = 8;  // how many hours off in 24h period
+var MAX_OFF_SEQ = 2;    // how many hours in a row it can be off
 
 /*
 TODO:
