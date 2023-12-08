@@ -1,202 +1,198 @@
 var MIN_PRICE = 30;      // values under this are always ON (MWh)
-var MAX_HOURS_OFF = 8;  // how many hours off in 24h period
-var MAX_OFF_SEQ = 2;    // how many hours in a row it can be off
+var MAX_HOURS_OFF = 10;  // how many hours off in 24h period
+var MAX_OFF_SEQ = 10;    // how many hours in a row it can be off
 
-/*
-TODO:
-move to https://dashboard.elering.ee/api/nps/price - this way we can get full two days and can excecute script at any time.
-*/
+var today = new Date();
+var tomorrow = new Date(Date.now() + 1*86400000); // today+24h
+
+function parse_url(result) {
+	if (result === null) {
+		print("fetch failed"); // TODO: insert default
+		return;
+	}
+	//console.log(JSON.parse(result.body).data.ee);
+	// hack. Shelly JSON doesn't like too long strings.
+	let json_obj = JSON.parse(result.body.slice(result.body.indexOf("ee")+4, result.body.indexOf("fi")-2));
+
+	let prices = [];
+	// create two-dimensional array [hour, price]
+	for (var date of [today, tomorrow]) {
+		for (var x of json_obj) {
+			if (new Date(x.timestamp*1000).getDate() == date.getDate()) prices.push({hour: new Date(x.timestamp*1000).getHours(), price: x.price});
+		}
+		log(prices);
+		if (prices.length != 24) console.log(date.toString() + " Length = " + prices.length + " !!");
+		else find_cheapest(prices, date.getDay());
+		prices = [];
+	}
+
+	console.log(schedule_cnt);
+	//console.log(schedule_arr);
+
+	Shelly.call("Schedule.DeleteAll", {}, schedule_create_run_script);
+}
+
+function find_cheapest(prices, wday) {
+	sort(prices, function(a, b){return b.price - a.price;});
+	prices.splice(MAX_HOURS_OFF + MAX_HOURS_OFF/MAX_OFF_SEQ); // keep first x most expensive + for removal (for leaving gaps)
+
+	// find ranges where OFF duration is too long
+	let seq = 0;
+	let rows_to_remove = [];
+	sort(prices, 0); // sort by hour
+	for (let i=1; i < prices.length; i++) {
+		if (prices[i-1].hours == prices[i].hours-1) seq++;
+		else {
+			if(seq >= MAX_OFF_SEQ) {
+				//console.log("start: " + (i-seq-1) + " hr: " + prices[i-seq-1][0]);
+				let x = findlowest(prices.slice(i-seq-1, i));
+				for (let j = 0; j < x.length; j++) rows_to_remove.push(x[j] + i - seq-1);
+				//console.log("rowstoremove: ", rows_to_remove);
+			}
+			seq = 0;
+		}
+	}
+
+	if(seq >= MAX_OFF_SEQ) {
+		let start = prices.length - seq-1;
+		//console.log("start: " + (prices.length - seq-1) + " hr: " + prices[prices.length - seq-1][0]);
+		let x = findlowest(prices.slice(prices.length - seq-1, prices.length));
+		for (let j = 0; j < x.length; j++) rows_to_remove.push(x[j] + prices.length - seq-1);
+		//console.log("rowstoremove: ", rows_to_remove);
+	}
+	// remove entries to leave big enough gaps
+	for (let i = rows_to_remove.length-1; i >= 0; i--) prices.splice(rows_to_remove[i], 1);
+
+	// still too many hours. remove most expensive one
+	sort(prices, function(a, b){return a.price - b.price;}); // sort cheapest first
+	while(prices.length > MAX_HOURS_OFF) prices = prices.slice(1);  // remove first
+
+	sort(prices, 0);
+	log(prices);
+	console.log("- - - -");
+	let current = true;
+	for (let i = 0; i < prices.length; i++) {
+		if (today.getHours() == prices[i].hour) current = false;
+		if (i == 0 || prices[i-1].hour != prices[i].hour-1) {
+			if (i != 0) {
+				print("0 0 " + (prices[i-1].hour+1) + " * * " + wday + "| on");
+				schedule_add("0 0 " + (prices[i-1].hour+1) + " * * " + wday, true);
+			}
+			print("0 0 " + prices[i].hour + " * * " + wday + "| off");
+			schedule_add("0 0 " + prices[i].hour + " * * " + wday, false);
+		}
+	}
+	print("30 59 " + prices[prices.length-1].hour + " * * " + wday + "| on");
+	schedule_add("40 59 " + prices[prices.length-1].hour + " * * " + wday, true); // hh:59:40
+	if (today.getDay() == wday) {
+		print("set relay " + (current == false ? "OFF" : "ON"));
+		Shelly.call("switch.set",{ id: 0, on: current});
+	}
+}
+
 var schedule_cnt = 1; // actually 0...
 var schedule_arr = [];
-function find_cheapest(result) {
-   print("Finding cheapest hours");
-
-    let json_obj = JSON.parse(result.body).hourly_prices;
-    let prices = [];
-    for (var x in json_obj) {
-        hr = x.split('.')[0]*24+x.split('.')[1]*1 -24;
-        if(hr > 0 && json_obj[x].price > MIN_PRICE) prices.push([hr, json_obj[x]]);
-    }
-    //log(prices);
-    //console.log("- - - -")
-    sort(prices, function(a, b){return b[1].price - a[1].price;});
-    //console.log(prices);
-    prices.splice(MAX_HOURS_OFF + MAX_HOURS_OFF/MAX_OFF_SEQ); // keep first x most expensive + for removal (for leaving gaps)
-    
-    // find ranges where OFF duration is too long
-    sort(prices, 0); // sort by hour
-    //log(prices);
-    //console.log("- - - -")  
-    let seq = 0;
-    let rows_to_remove = [];
-    for (let i=1; i < prices.length; i++) {
-        if (prices[i-1][0] == prices[i][0]-1) seq++;
-        else {
-            if(seq >= MAX_OFF_SEQ) {
-                //console.log("start: " + (i-seq-1) + " hr: " + prices[i-seq-1][0]);
-                let x = findlowest(prices.slice(i-seq-1, i));
-                for (let j = 0; j < x.length; j++) rows_to_remove.push(x[j] + i - seq-1);
-                //console.log("rowstoremove: ", rows_to_remove);
-            }
-            seq = 0;
-        }
-    }
-    if(seq >= MAX_OFF_SEQ) {
-        let start = prices.length - seq-1;
-        //console.log("start: " + (prices.length - seq-1) + " hr: " + prices[prices.length - seq-1][0]);
-        let x = findlowest(prices.slice(prices.length - seq-1, prices.length));
-        for (let j = 0; j < x.length; j++) rows_to_remove.push(x[j] + prices.length - seq-1);
-        //console.log("rowstoremove: ", rows_to_remove);
-    }
-    // remove entries to leave big enough gaps
-    for (let i = rows_to_remove.length-1; i >= 0; i--) prices.splice(rows_to_remove[i], 1);
-  
-    // still too many hours. remove most expensive one
-    sort(prices, function(a, b){return a[1].price - b[1].price;}); // sort cheapest first
-    while(prices.length > MAX_HOURS_OFF) prices = prices.slice(1);  // remove first
-    log(prices);
-
-    let timespec;
-    sort(prices, 0);
-    let wday;
-    for (let i=0; i < prices.length; i++) {
-        wday = new Date(prices[i][1].time).getDay();
-        if (i == 0) {
-            print("0 0 " + fix_midnight(prices[i][0]) + " * * " + wday + "| off");
-            schedule_add("0 0 " + fix_midnight(prices[i][0]) + " * * " + wday, false);
-        } else if (prices[i-1][0] != prices[i][0]-1 && prices[i-1][0] != 24) {
-            print("0 0 " + fix_midnight(prices[i-1][0]+1) + " * * " + wday + "| on");
-            schedule_add("0 0 " + fix_midnight(prices[i-1][0]+1) + " * * " + wday, true);
-            print("0 0 " + fix_midnight(prices[i][0]) + " * * " + wday + "| off");
-            schedule_add("0 0 " + fix_midnight(prices[i][0]) + " * * " + wday, false);
-        }
-    }
-    if (prices[prices.length-1][0] != 24) {
-        print("0 0 " + fix_midnight(prices[prices.length-1][0]+1) + " * * " + wday + "| on");
-        schedule_add("0 0 " + fix_midnight(prices[prices.length-1][0]+1) + " * * " + wday, true);
-    }
-    Shelly.call("Schedule.DeleteAll", {}, schedule_create_run_script);
-
-    // TODO: instead of 01:00 compare against current time?
-    if (prices[0][0] == 1) { // first action at 01:00 could only be 'off'
-      print("set OFF");
-      Shelly.call("switch.set",{ id: 0, on: false});
-    } else {
-      print("set ON");
-      Shelly.call("switch.set",{ id: 0, on: true});
-    }
-        
-    //Stop this script in one minute from now
-    Timer.set(60 * 1000, false, function () {
-        print("Stopping the script");
-        Shelly.call("Script.stop", { "id": Shelly.getCurrentScriptId()})
-    });
-}
-
-function fix_midnight(hour) {
-  if (hour >= 24) return hour - 24; else return hour;
-}
 function schedule_create_run_script() {
-    Shelly.call("Schedule.Create", {
-      "enable": true, "timespec": "0 0 1 * * *",
-      "calls": [{
-            "method": "Script.start",
-            "params": { "id": Shelly.getCurrentScriptId() }
-        }] }, schedule_create); // every day at 01:00
+	Shelly.call("Schedule.Create", {
+		"enable": true, "timespec": "0 0 1 * * *",
+		"calls": [{
+			"method": "Script.start",
+			"params": { "id": Shelly.getCurrentScriptId() }
+		}] }, schedule_create); // every day at 01:00
 }
 function schedule_create(result, error_code, error_message) {
-  schedule_cnt--;
-  //if(result != null) console.log(result);
-  if(error_code) console.log(error_message);
-  if(!schedule_cnt) return;
-  Shelly.call("Schedule.Create", {
-        "enable": true, "timespec": schedule_arr[schedule_cnt-1][0],
-        "calls": [{
-            "method": "Switch.Set",
-            "params": { "id": 0, "on": schedule_arr[schedule_cnt-1][1] }
-        }]
-    }, schedule_create);
+	schedule_cnt--;
+	//if(result != null) console.log(result);
+	if(error_code) console.log(error_message);
+	if(!schedule_cnt) {
+		print("schedule created");
+		return;
+	}
+	Shelly.call("Schedule.Create", {
+		"enable": true, "timespec": schedule_arr[schedule_cnt-1][0],
+		"calls": [{
+			"method": "Switch.Set",
+			"params": { "id": 0, "on": schedule_arr[schedule_cnt-1][1] }
+		}]
+	}, schedule_create);
+}
+
+function schedule_add(timespec, turn_on){
+	schedule_cnt++;
+	schedule_arr.push([timespec, turn_on]);
 }
 
 // if device can't be off too long, find out cheapest combination
 // and return array of indexes that need to be kept
 function findlowest(arr) {
-    const n = arr.length;
+	const n = arr.length;
 
-    //console.log("input: ", arr)
-    //const min = new Array(n).fill(0);
-    const min = [];
-    for (var i = 0; i < n; i++) min[i] = 0;
+	//console.log("input: ", arr)
+	//const min = new Array(n).fill(0);
+	const min = [];
+	for (var i = 0; i < n; i++) min[i] = 0;
 
-    //const elements = new Array(n).fill(null).map(() => []);
-    const elements = [];
-    for (var i = 0; i < n; i++) elements[i] = [];
+	//const elements = new Array(n).fill(null).map(() => []);
+	const elements = [];
+	for (var i = 0; i < n; i++) elements[i] = [];
 
-    // Base cases
-    for (let i = 0; i<=MAX_OFF_SEQ; i++) {
-        min[i] = arr[i][1].price;
-        elements[i] = [i];
-    }
+	// Base cases
+	for (let i = 0; i<=MAX_OFF_SEQ; i++) {
+		min[i] = arr[i].price;
+		elements[i] = [i];
+	}
 
-    // Iterate through the array to fill the min and elements arrays
-    let x, x_pos;
-    for (let i = MAX_OFF_SEQ+1; i <= n; i++) {
-        x_pos = i-MAX_OFF_SEQ-1;
-        x = min[x_pos];
-        for (let j = i - MAX_OFF_SEQ; j < i; j++) {
-            if (min[j] < x) {
-                x = min[j];
-                x_pos = j;
-            }
-        }
-        if (i < n) {
-            min[i] = min[x_pos] + arr[i][1].price;
-            //elements[i] = [...elements[x_pos], i];
-            elements[i] = [];
-            for (var k = 0; k < elements[x_pos].length; k++) elements[i].push(elements[x_pos][k]);
-            elements[i].push(i);
-        } else {
-            //console.log("Lowest Sum:", min[x_pos]);
-            //console.log("Chosen Elements:", elements[x_pos]);
-            return elements[x_pos];
-        }
-        //console.log(elements);
-    }
+	// Iterate through the array to fill the min and elements arrays
+	let x, x_pos;
+	for (let i = MAX_OFF_SEQ + 1; i <= n; i++) {
+		x_pos = i - MAX_OFF_SEQ - 1;
+		x = min[x_pos];
+		for (let j = i - MAX_OFF_SEQ; j < i; j++) {
+			if (min[j] < x) {
+				x = min[j];
+				x_pos = j;
+			}
+		}
+		if (i < n) {
+			min[i] = min[x_pos] + arr[i].price;
+			elements[i] = [];
+			for (var k = 0; k < elements[x_pos].length; k++) elements[i].push(elements[x_pos][k]);
+			elements[i].push(i);
+		} else {
+			//console.log("Lowest Sum:", min[x_pos]);
+			//console.log("Chosen Elements:", elements[x_pos]);
+			return elements[x_pos];
+		}
+		//console.log(elements);
+	}
 }
 
 function sort(array, fn) {
-    let i, j, minmax, minmax_indx;
-    if(fn==0) fn=function(a, b) { return a[0] - b[0];}
+	let i, j, minmax, minmax_indx;
+	if (fn == 0) fn = function(a, b) { return a.hour - b.hour; }
 
-    for(i = 0; i < array.length; i++) {
-        minmax=0;
-        for(j = i; j < array.length; j++) {
-            if (!minmax || fn(array[j], minmax)>0){
-                minmax = array[j];
-                minmax_indx = j;
-            }
-        }
-        array.splice(minmax_indx, 1); // delete old
-        array.splice(0,0,minmax); // insert to beginning
-    }
+	for (i = 0; i < array.length; i++) {
+		minmax = 0;
+		for (j = i; j < array.length; j++) {
+			if (!minmax || fn(array[j], minmax)>0){
+				minmax = array[j];
+				minmax_indx = j;
+			}
+		}
+		array.splice(minmax_indx, 1); // delete old
+		array.splice(0, 0, minmax); // insert to beginning
+	}
 }
 
-function schedule_add(timespec, turn_on){
-  schedule_cnt++;
-  schedule_arr.push([timespec, turn_on]);
-}
-
-function log(arr) {
-    for(let i=0; i<arr.length; i++) console.log(arr[i][0]+', '+arr[i][1].price+', '+arr[i][1].time);
-}
-
-function updateTimer() {
-    print("Starting, fetching hourly prices");
-    Shelly.call("HTTP.GET", { url: "https://elspotcontrol.netlify.app/spotprices-v01-EE.json", timeout:60, ssl_ca:"*"}, find_cheapest);
-}
+function log(arr) { for (let i=0; i<arr.length; i++) console.log(arr[i].hour+', '+arr[i].price); }
 
 let secrand = JSON.stringify(Math.floor(Math.random() * 60*1));
 print("Starting in " + secrand/60 + " minutes");
 // Delay excecuting
-//Timer.set(secrand * 1000, false, function () { updateTimer(); });
-updateTimer();
+//Timer.set(secrand * 1000, false, function () { ...; });
+let yesterday = new Date(Date.now() - 86400000); // today-24h
+var url = "https://dashboard.elering.ee/api/nps/price?start=" + yesterday.getFullYear() + "-" + ("0"+(yesterday.getMonth()+1)).slice(-2) + "-" + ("0"+yesterday.getDate()).slice(-2) + "T20%3A59%3A59.999Z&end=" + tomorrow.getFullYear() + "-" + ("0"+(tomorrow.getMonth()+1)).slice(-2) + "-" + ("0"+tomorrow.getDate()).slice(-2) + "T23%3A59%3A59.999Z";
+console.log(url);
+Shelly.call("http.get", { url: url, timeout:10, ssl_ca:"*"}, parse_url);
+Timer.set(120* 1000, false, function () { Shelly.call("Script.stop", { "id": Shelly.getCurrentScriptId()}) });
+
