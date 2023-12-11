@@ -1,49 +1,102 @@
 var MIN_PRICE = 30;      // values under this are always ON (MWh)
-var MAX_HOURS_OFF = 10;  // how many hours off in 24h period
-var MAX_OFF_SEQ = 10;    // how many hours in a row it can be off
+// MIN and MAX values depend on temperature. Currently current temperature applies for today and tomorrow.
+// MAX values are used when Temp = 0°
+// MIN values are used when Temp = -20°C
+// change function calc_minmax if needed
+var MIN_HOURS_OFF = 5;  // how many hours off in 24h period per -20°C
+var MAX_HOURS_OFF = 10;  // how many hours off in 24h period per 0°C
+var MIN_OFF_SEQ = 2;    // how many hours in a row it can be off per -20°C
+var MAX_OFF_SEQ = 5;    // how many hours in a row it can be off per 0°C
 
-var today = new Date();
-var tomorrow = new Date(Date.now() + 1*86400000); // today+24h
+// Turn relay off on high hours. To invert, set to 'true'
+var Invert_relay = false;
+var Today = new Date();
+var Tomorrow = new Date(Date.now() + 1*86400000); // today+24h
 
-function parse_url(result) {
+var Temp_url = "https://www.ilmateenistus.ee/ilma_andmed/ticker/vaatlused-html.php?jaam=14"; // Tallinn-Harku
+// TODO: use forecast for tomorrow. https://www.ilmateenistus.ee/ilma_andmed/xml/forecast.php
+var Temp = -10; // default if parsing failed
+
+var HOURS_OFF = Math.round((MAX_HOURS_OFF - MIN_HOURS_OFF) / 2);
+var OFF_SEQ   = Math.round((MAX_OFF_SEQ - MIN_OFF_SEQ) / 2);
+function calc_minmax() {
+	var upper_temp = 0;
+	var lower_temp = -20;
+	if(Temp <= lower_temp) {
+		HOURS_OFF = MIN_HOURS_OFF;
+		OFF_SEQ = MIN_OFF_SEQ;
+	} else if(Temp >= upper_temp) {
+		HOURS_OFF = MAX_HOURS_OFF;
+		OFF_SEQ = MAX_OFF_SEQ;
+	} else {
+		HOURS_OFF = Math.round((Temp - upper_temp) / (lower_temp - upper_temp) * (MAX_HOURS_OFF - MIN_HOURS_OFF) + MIN_HOURS_OFF);
+		OFF_SEQ = Math.round((Temp - upper_temp) / (lower_temp - upper_temp) * (MAX_OFF_SEQ - MIN_OFF_SEQ) + MIN_OFF_SEQ);
+	}
+	console.log("Outside temp: " + Temp);
+	console.log("HOURS_OFF: " + HOURS_OFF);
+	console.log("OFF_SEQ: " + OFF_SEQ);
+}
+
+function parse_temp(result) {
+	if (result === null) print("temperature fetch failed or skipped");
+	else {
+		let i = result.body.slice(result.body.indexOf("Temperatuur: ")+13, result.body.indexOf(" &deg;C"));
+		if (!isNaN(i)) Temp = i;
+	}
+	calc_minmax();
+	let yesterday = new Date(Date.now() - 86400000); // today-24h
+	var url = "https://dashboard.elering.ee/api/nps/price?start=" + yesterday.getFullYear() + "-" + ("0"+(yesterday.getMonth()+1)).slice(-2) + "-" + ("0"+yesterday.getDate()).slice(-2) + "T20%3A59%3A59.999Z&end=" + Tomorrow.getFullYear() + "-" + ("0"+(Tomorrow.getMonth()+1)).slice(-2) + "-" + ("0"+Tomorrow.getDate()).slice(-2) + "T23%3A59%3A59.999Z";
+	console.log(url);
+	Shelly.call("http.get", { url: url, timeout:10, ssl_ca:"*"}, parse_nordpool);
+}
+
+function parse_nordpool(result) {
 	if (result === null) {
 		print("fetch failed"); // TODO: insert default
 		return;
 	}
 	//console.log(JSON.parse(result.body).data.ee);
 	// hack. Shelly JSON doesn't like too long strings.
+	let i, prices;
 	let json_obj = JSON.parse(result.body.slice(result.body.indexOf("ee")+4, result.body.indexOf("fi")-2));
 
-	let prices = [];
+
 	// create two-dimensional array [hour, price]
-	for (var date of [today, tomorrow]) {
+	for (var date of [Today, Tomorrow]) {
+		i = 0;
+		prices = [];
 		for (var x of json_obj) {
-			if (new Date(x.timestamp*1000).getDate() == date.getDate()) prices.push({hour: new Date(x.timestamp*1000).getHours(), price: x.price});
+			if (new Date(x.timestamp*1000).getDate() == date.getDate()){
+				if(x.price > MIN_PRICE) prices.push({hour: new Date(x.timestamp*1000).getHours(), price: x.price});
+				i++;
+			}
 		}
 		log(prices);
-		if (prices.length != 24) console.log(date.toString() + " Length = " + prices.length + " !!");
+		if (i != 24) console.log(date.toString() + " Length = " + i + " !!");
 		else find_cheapest(prices, date.getDay());
-		prices = [];
 	}
-
-	console.log(schedule_cnt);
+	console.log("Schedule cnt:" + schedule_cnt);
 	//console.log(schedule_arr);
-
 	Shelly.call("Schedule.DeleteAll", {}, schedule_create_run_script);
 }
 
 function find_cheapest(prices, wday) {
+	//log(prices);
+	//console.log("- - - -")
 	sort(prices, function(a, b){return b.price - a.price;});
-	prices.splice(MAX_HOURS_OFF + MAX_HOURS_OFF/MAX_OFF_SEQ); // keep first x most expensive + for removal (for leaving gaps)
+	//console.log(prices);
+	prices.splice(HOURS_OFF + HOURS_OFF/OFF_SEQ); // keep first x most expensive + for removal (for leaving gaps)
 
 	// find ranges where OFF duration is too long
+	sort(prices, 0); // sort by hour
+	//log(prices);
+	//console.log("- - - -")  
 	let seq = 0;
 	let rows_to_remove = [];
-	sort(prices, 0); // sort by hour
 	for (let i=1; i < prices.length; i++) {
 		if (prices[i-1].hours == prices[i].hours-1) seq++;
 		else {
-			if(seq >= MAX_OFF_SEQ) {
+			if(seq >= OFF_SEQ) {
 				//console.log("start: " + (i-seq-1) + " hr: " + prices[i-seq-1][0]);
 				let x = findlowest(prices.slice(i-seq-1, i));
 				for (let j = 0; j < x.length; j++) rows_to_remove.push(x[j] + i - seq-1);
@@ -53,7 +106,7 @@ function find_cheapest(prices, wday) {
 		}
 	}
 
-	if(seq >= MAX_OFF_SEQ) {
+	if(seq >= OFF_SEQ) {
 		let start = prices.length - seq-1;
 		//console.log("start: " + (prices.length - seq-1) + " hr: " + prices[prices.length - seq-1][0]);
 		let x = findlowest(prices.slice(prices.length - seq-1, prices.length));
@@ -65,26 +118,26 @@ function find_cheapest(prices, wday) {
 
 	// still too many hours. remove most expensive one
 	sort(prices, function(a, b){return a.price - b.price;}); // sort cheapest first
-	while(prices.length > MAX_HOURS_OFF) prices = prices.slice(1);  // remove first
+	while(prices.length > HOURS_OFF) prices = prices.slice(1);  // remove first
 
 	sort(prices, 0);
 	log(prices);
 	console.log("- - - -");
-	let current = true;
+	let current = !Invert_relay; // default true
 	for (let i = 0; i < prices.length; i++) {
-		if (today.getHours() == prices[i].hour) current = false;
+		if (Today.getHours() == prices[i].hour) current = Invert_relay;
 		if (i == 0 || prices[i-1].hour != prices[i].hour-1) {
 			if (i != 0) {
-				print("0 0 " + (prices[i-1].hour+1) + " * * " + wday + "| on");
-				schedule_add("0 0 " + (prices[i-1].hour+1) + " * * " + wday, true);
+				print("0 0 " + (prices[i-1].hour+1) + " * * " + wday + (!Invert_relay ? "| on" : "| off"));
+				schedule_add("0 0 " + (prices[i-1].hour+1) + " * * " + wday, !Invert_relay);
 			}
-			print("0 0 " + prices[i].hour + " * * " + wday + "| off");
-			schedule_add("0 0 " + prices[i].hour + " * * " + wday, false);
+			print("0 0 " + prices[i].hour + " * * " + wday + (Invert_relay ? "| on" : "| off"));
+			schedule_add("0 0 " + prices[i].hour + " * * " + wday, Invert_relay);
 		}
 	}
-	print("30 59 " + prices[prices.length-1].hour + " * * " + wday + "| on");
-	schedule_add("40 59 " + prices[prices.length-1].hour + " * * " + wday, true); // hh:59:40
-	if (today.getDay() == wday) {
+	print("40 59 " + prices[prices.length-1].hour + " * * " + wday + (!Invert_relay ? "| on" : "| off"));
+	schedule_add("40 59 " + prices[prices.length-1].hour + " * * " + wday, !Invert_relay); // hh:59:40
+	if (Today.getDay() == wday) {
 		print("set relay " + (current == false ? "OFF" : "ON"));
 		Shelly.call("switch.set",{ id: 0, on: current});
 	}
@@ -104,10 +157,8 @@ function schedule_create(result, error_code, error_message) {
 	schedule_cnt--;
 	//if(result != null) console.log(result);
 	if(error_code) console.log(error_message);
-	if(!schedule_cnt) {
-		print("schedule created");
-		return;
-	}
+	//else console.log(result);
+	if(!schedule_cnt) return;
 	Shelly.call("Schedule.Create", {
 		"enable": true, "timespec": schedule_arr[schedule_cnt-1][0],
 		"calls": [{
@@ -137,17 +188,17 @@ function findlowest(arr) {
 	for (var i = 0; i < n; i++) elements[i] = [];
 
 	// Base cases
-	for (let i = 0; i<=MAX_OFF_SEQ; i++) {
+	for (let i = 0; i <= OFF_SEQ; i++) {
 		min[i] = arr[i].price;
 		elements[i] = [i];
 	}
 
 	// Iterate through the array to fill the min and elements arrays
 	let x, x_pos;
-	for (let i = MAX_OFF_SEQ + 1; i <= n; i++) {
-		x_pos = i - MAX_OFF_SEQ - 1;
+	for (let i = OFF_SEQ + 1; i <= n; i++) {
+		x_pos = i - OFF_SEQ - 1;
 		x = min[x_pos];
-		for (let j = i - MAX_OFF_SEQ; j < i; j++) {
+		for (let j = i - OFF_SEQ; j < i; j++) {
 			if (min[j] < x) {
 				x = min[j];
 				x_pos = j;
@@ -186,13 +237,12 @@ function sort(array, fn) {
 
 function log(arr) { for (let i=0; i<arr.length; i++) console.log(arr[i].hour+', '+arr[i].price); }
 
+Timer.set(180* 1000, false, function () { Shelly.call("Script.stop", { "id": Shelly.getCurrentScriptId()}) }); // stop after 3min
 let secrand = JSON.stringify(Math.floor(Math.random() * 60*1));
 print("Starting in " + secrand/60 + " minutes");
 // Delay excecuting
-//Timer.set(secrand * 1000, false, function () { ...; });
-let yesterday = new Date(Date.now() - 86400000); // today-24h
-var url = "https://dashboard.elering.ee/api/nps/price?start=" + yesterday.getFullYear() + "-" + ("0"+(yesterday.getMonth()+1)).slice(-2) + "-" + ("0"+yesterday.getDate()).slice(-2) + "T20%3A59%3A59.999Z&end=" + tomorrow.getFullYear() + "-" + ("0"+(tomorrow.getMonth()+1)).slice(-2) + "-" + ("0"+tomorrow.getDate()).slice(-2) + "T23%3A59%3A59.999Z";
-console.log(url);
-Shelly.call("http.get", { url: url, timeout:10, ssl_ca:"*"}, parse_url);
-Timer.set(120* 1000, false, function () { Shelly.call("Script.stop", { "id": Shelly.getCurrentScriptId()}) });
+Timer.set(secrand * 1000, false, function () {
+	if (MAX_HOURS_OFF == MIN_HOURS_OFF && MAX_OFF_SEQ == MIN_OFF_SEQ) parse_temp(null); // skip temp query
+	else Shelly.call("http.get", { url: Temp_url, timeout:10, ssl_ca:"*"}, parse_temp);
+});
 
