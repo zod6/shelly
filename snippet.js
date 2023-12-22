@@ -71,7 +71,7 @@ function parse_nordpool(result) {
 				i++;
 			}
 		}
-		log(prices);
+		console.log("init: ", prices);
 		if (i != 24) console.log(date.toString() + " Length = " + i + " !!");
 		else find_cheapest(prices, date.getDay());
 	}
@@ -94,10 +94,10 @@ function find_cheapest(prices, wday) {
 	let seq = 0;
 	let rows_to_remove = [];
 	for (let i=1; i < prices.length; i++) {
-		if (prices[i-1].hours == prices[i].hours-1) seq++;
+		if (prices[i-1].hour == prices[i].hour-1) seq++;
 		else {
 			if(seq >= OFF_SEQ) {
-				//console.log("start: " + (i-seq-1) + " hr: " + prices[i-seq-1][0]);
+				//console.log("start: " + (i-seq-1) + " hr: " + prices[i-seq-1].hour);
 				let x = findlowest(prices.slice(i-seq-1, i));
 				for (let j = 0; j < x.length; j++) rows_to_remove.push(x[j] + i - seq-1);
 				//console.log("rowstoremove: ", rows_to_remove);
@@ -108,7 +108,7 @@ function find_cheapest(prices, wday) {
 
 	if(seq >= OFF_SEQ) {
 		let start = prices.length - seq-1;
-		//console.log("start: " + (prices.length - seq-1) + " hr: " + prices[prices.length - seq-1][0]);
+		//console.log("start: " + (prices.length - seq-1) + " hr: " + prices[prices.length - seq-1].hour);
 		let x = findlowest(prices.slice(prices.length - seq-1, prices.length));
 		for (let j = 0; j < x.length; j++) rows_to_remove.push(x[j] + prices.length - seq-1);
 		//console.log("rowstoremove: ", rows_to_remove);
@@ -121,7 +121,7 @@ function find_cheapest(prices, wday) {
 	while(prices.length > HOURS_OFF) prices = prices.slice(1);  // remove first
 
 	sort(prices, 0);
-	log(prices);
+	console.log("final: ", prices);
 	console.log("- - - -");
 	let current = !Invert_relay; // default true
 	for (let i = 0; i < prices.length; i++) {
@@ -147,11 +147,11 @@ var schedule_cnt = 1; // actually 0...
 var schedule_arr = [];
 function schedule_create_run_script() {
 	Shelly.call("Schedule.Create", {
-		"enable": true, "timespec": "0 0 1 * * *",
+		"enable": true, "timespec": "0 1 17 * * *",
 		"calls": [{
 			"method": "Script.start",
 			"params": { "id": Shelly.getCurrentScriptId() }
-		}] }, schedule_create); // every day at 01:00
+		}] }, schedule_create); // every day at 17:01
 }
 function schedule_create(result, error_code, error_message) {
 	schedule_cnt--;
