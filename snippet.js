@@ -81,16 +81,11 @@ function parse_nordpool(result) {
 }
 
 function find_cheapest(prices, wday) {
-	//log(prices);
-	//console.log("- - - -")
 	sort(prices, function(a, b){return b.price - a.price;});
-	//console.log(prices);
 	prices.splice(HOURS_OFF + HOURS_OFF/OFF_SEQ); // keep first x most expensive + for removal (for leaving gaps)
 
 	// find ranges where OFF duration is too long
 	sort(prices, 0); // sort by hour
-	//log(prices);
-	//console.log("- - - -")  
 	let seq = 0;
 	let rows_to_remove = [];
 	for (let i=1; i < prices.length; i++) {
@@ -105,7 +100,6 @@ function find_cheapest(prices, wday) {
 			seq = 0;
 		}
 	}
-
 	if(seq >= OFF_SEQ) {
 		let start = prices.length - seq-1;
 		//console.log("start: " + (prices.length - seq-1) + " hr: " + prices[prices.length - seq-1].hour);
@@ -234,8 +228,6 @@ function sort(array, fn) {
 		array.splice(0, 0, minmax); // insert to beginning
 	}
 }
-
-function log(arr) { for (let i=0; i<arr.length; i++) console.log(arr[i].hour+', '+arr[i].price); }
 
 Timer.set(180* 1000, false, function () { Shelly.call("Script.stop", { "id": Shelly.getCurrentScriptId()}) }); // stop after 3min
 let secrand = JSON.stringify(Math.floor(Math.random() * 60*1));
