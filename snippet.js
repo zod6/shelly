@@ -1,3 +1,4 @@
+var VERSION = "1.0";
 var MIN_PRICE = 30;      // values under this are always ON (MWh)
 // MIN and MAX values depend on temperature. Currently current temperature applies for today and tomorrow.
 // MAX values are used when Temp = 0°
@@ -29,8 +30,8 @@ function calc_minmax() {
 		HOURS_OFF = MAX_HOURS_OFF;
 		OFF_SEQ = MAX_OFF_SEQ;
 	} else {
-		HOURS_OFF = Math.round((Temp - upper_temp) / (lower_temp - upper_temp) * (MAX_HOURS_OFF - MIN_HOURS_OFF) + MIN_HOURS_OFF);
-		OFF_SEQ = Math.round((Temp - upper_temp) / (lower_temp - upper_temp) * (MAX_OFF_SEQ - MIN_OFF_SEQ) + MIN_OFF_SEQ);
+		HOURS_OFF = Math.round((1 - (Temp - upper_temp) / (lower_temp - upper_temp)) * (MAX_HOURS_OFF - MIN_HOURS_OFF) + MIN_HOURS_OFF);
+		OFF_SEQ = Math.round((1 - (Temp - upper_temp) / (lower_temp - upper_temp)) * (MAX_OFF_SEQ - MIN_OFF_SEQ) + MIN_OFF_SEQ);
 	}
 	console.log("Outside temp: " + Temp);
 	console.log("HOURS_OFF: " + HOURS_OFF);
@@ -231,6 +232,7 @@ function sort(array, fn) {
 
 Timer.set(180* 1000, false, function () { Shelly.call("Script.stop", { "id": Shelly.getCurrentScriptId()}) }); // stop after 3min
 let secrand = JSON.stringify(Math.floor(Math.random() * 60*1));
+print("Version " + VERSION);
 print("Starting in " + secrand/60 + " minutes");
 // Delay excecuting
 Timer.set(secrand * 1000, false, function () {
