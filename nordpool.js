@@ -73,6 +73,7 @@ function parse_nordpool(result) {
 			}
 		}
 		console.log("init: ", prices);
+		if (prices.length == 0) continue;
 		if (i != 24) console.log(date.toString() + " Length = " + i + " !!");
 		else find_cheapest(prices, date.getDay());
 	}
